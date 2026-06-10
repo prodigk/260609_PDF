@@ -1,34 +1,86 @@
-# pip install -U langchain-text-splitters
+# pip install --upgrade langchain langchain-community langchain-text-splitters langchain-openai langchain-chroma pypdf python-dotenv
+# pip install --upgrade langchain langchain-community langchain-text-splitters langchain-openai langchain-chroma pypdf python-dotenv
+
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_classic.retrievers import MultiQueryRetriever
 
-# PDF 파일 경로 설정 및 로더 초기화
+from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+
 loader = PyPDFLoader("NAVER_20260607.pdf")
-
-# PDF 페이지 로드 및 분할
 pages = loader.load_and_split()
 
-# split 단계 (텍스트 청크 쪼개기)
-# LLM이 처리하기 좋게 문서를 더 작은 단위(chunk)로 잘게 쪼갠다.
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size = 300, # 하나의 텍스트 조각(Chunk)에 들어갈 최대 글자 수
-  
-    chunk_overlap = 20, # 앞뒤 텍스트 조각 간에 겹칠 글자 수, 문맥이 끊기는 것을 방지하기 위해 보통 10~20% 정도 겹치게 설정함
+    chunk_size = 300,           # 하나의 청크가 가질 최대 글자 수
+    chunk_overlap  = 20,        # 청크 간 문맥 연결을 위해 겹칠 글자 수
+    length_function = len,      # 길이 측정 기준 (기본 문자열 길이)
+    is_separator_regex = False, # 구분 기호의 정규표현식 해석 여부
+)
+texts = text_splitter.split_documents(pages)
+embeddings_model = OpenAIEmbeddings(model="text-embedding-3-small")
+db = Chroma.from_documents(texts, embeddings_model)
 
-    length_function = len, # 텍스트의 길이를 계산하는 함수, 기본적으로는 글자 수를 세는 len 함수를 사용하지만, 단어 수나 토큰 수로 계산하는 다른 함수를 사용할 수도 있음
+# 멀티 쿼리 리트리버 생성 및 LLM 연결
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=1)
 
-    is_separator_regex = False, # 구분자(separator)가 정규 표현식으로 표현할지 판단, False로 설정하면 단순 문자열로 구분자를 사용하고, True로 설정하면 정규 표현식으로 구분자를 사용함
+# 사용자의 질문을 다양한 각도에서 재해석하여 검색 확률을 높이는 MultiQueryRetriever를 생성
+retriever_from_llm = MultiQueryRetriever.from_llm(
+    retriever=db.as_retriever(), 
+    llm=llm
 )
 
-# 설정한 chunk_size(300자) 기준에 맞춰 최종 텍스트 조각들로 분할한다.
-texts = text_splitter.split_documents(pages)
+# RAG 체인 생성
+# LLM에게 전달할 프롬프트를 정의
+system_prompt = (
+    "너는 질문-답변을 돕는 유능한 비서야. "
+    "아래 제공된 맥락(context)만을 사용하여 질문에 답해줘. "
+    "답을 모르면 모른다고 하고, 절대 답변을 지어내지 마.\n\n"
+    "{context}"
+)
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system_prompt),
+    ("human", "{input}"),
+])
 
-if texts:
-    print("--- [첫 번째 텍스트 조각(Chunk) 객체 출력] ---")
-    print(texts[0])
+# 검색된 문서들을 활용하여 질문에 답하는 체인 생성
+question_answer_chain = create_stuff_documents_chain(llm, prompt)
+
+# Chroma DB 
+retriever = db.as_retriever()
+
+# RAG 체인 생성: 검색된 문서들을 활용하여 질문에 답하는 체인과 멀티 쿼리 리트리버를 연결
+rag_chain = create_retrieval_chain(retriever_from_llm, question_answer_chain)
+
+# 실제 질문에 대한 답변 생성
+#question = "아내가 먹고 싶어하는 음식은 무엇이야?"
+question = "26년 2분기 이후 네이버 매출 전망이 어떻게 돼?"
+
+response = rag_chain.invoke({"input": question})
+
+# 결과 출력
+# print(f"검색된 참조 문서 개수: {len(response.get('context', []))}")
+# print(f"답변: {response['answer']}")
+
+print("----------- [최종 답변] -----------")
+print(response['answer'])
+
+
+# Streamlit 앱으로 질문-답변 시스템 구현
+import streamlit as st
+
+st.title("RAG 기반 질문-답변 시스템")
+user_question = st.text_input("네이버 투자 적합성에 대한 질문을 입력하세요:")
+if user_question:
+    response = rag_chain.invoke({"input": user_question})
+    st.write(f"검색된 참조 문서 개수: {len(response.get('context', []))}")
+    st.write(f"답변: {response['answer']}")
     
-    print("\n--- [첫 번째 조각의 실제 텍스트 내용만 출력] ---")
-    print(texts[0].page_content)
-else:
-    print("분할된 텍스트 조각이 없습니다. PDF 파일 내용을 확인해 주세요.")
+    
