@@ -4,12 +4,12 @@ import tempfile
 
 import streamlit as st
 from dotenv import load_dotenv
-from langchain_chroma import Chroma
 from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.retrievers import MultiQueryRetriever
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -49,7 +49,8 @@ def create_rag_chain(file_bytes: bytes, file_name: str):
             document.metadata["source"] = file_name
 
         embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_store = Chroma.from_documents(documents, embeddings)
+        vector_store = InMemoryVectorStore(embeddings)
+        vector_store.add_documents(documents)
 
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
         retriever = MultiQueryRetriever.from_llm(
