@@ -17,21 +17,108 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 load_dotenv()
 
 st.set_page_config(page_title="PDF 질문-답변")
-st.title("PDF 질문-답변 시스템")
+st.title("📄 PDF 질문-답변 시스템")
 st.caption("PDF를 업로드한 뒤 문서 내용에 관해 질문해 보세요.")
 
+st.markdown(
+    """
+    <style>
+    :root {
+        --composer-width: 46rem;
+        --composer-side-gap: 1rem;
+    }
 
+    /* 업로더를 질문창과 분리된 상단 카드로 고정 */
+    [data-testid="stFileUploader"] {
+        position: fixed;
+        left: 50%;
+        bottom: 6.75rem;
+        transform: translateX(-50%);
+        width: min(
+            var(--composer-width),
+            calc(100vw - (var(--composer-side-gap) * 2))
+        );
+        z-index: 999;
+        box-sizing: border-box;
+        padding: 0.65rem;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 0.9rem;
+        background: var(--background-color);
+        box-shadow: 0 0.35rem 1.25rem rgba(0, 0, 0, 0.12);
+        max-height: 10rem;
+        overflow-y: auto;
+    }
+
+    [data-testid="stFileUploaderDropzone"] {
+        min-height: 3.25rem;
+        padding: 0.55rem 0.75rem;
+        border-radius: 0.65rem;
+        background: rgba(128, 128, 128, 0.06);
+    }
+
+    /* 질문 입력창도 업로더와 같은 폭으로 맞춘다. */
+    [data-testid="stBottomBlockContainer"] {
+        width: min(
+            var(--composer-width),
+            calc(100vw - (var(--composer-side-gap) * 2))
+        );
+        margin: 0 auto;
+        padding-bottom: 0.75rem;
+    }
+
+    [data-testid="stChatInput"] {
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 0.9rem;
+        background: var(--background-color);
+        box-shadow: 0 0.35rem 1.25rem rgba(0, 0, 0, 0.12);
+    }
+
+    /* 채팅 영역과 하단 고정 UI가 겹치지 않도록 공간 확보 */
+    [data-testid="stAppViewBlockContainer"] {
+        padding-bottom: 18rem;
+    }
+
+    /* 채팅 기록 컨테이너 안에서만 세로 스크롤 */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(128, 128, 128, 0.025);
+        border-color: rgba(128, 128, 128, 0.2);
+        border-radius: 0.9rem;
+    }
+
+    @media (max-width: 640px) {
+        :root {
+            --composer-side-gap: 0.5rem;
+        }
+
+        [data-testid="stFileUploader"] {
+            bottom: 6.5rem;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# RAG 체인 생성 함수: PDF를 벡터화하고 검색 기반 QA 체인을 만든다.
 @st.cache_resource(show_spinner=False)
-def create_rag_chain(file_bytes: bytes, file_name: str):
-    """업로드된 PDF를 벡터화하고 문서 검색 기반 QA 체인을 만든다."""
-    temp_path = None
+def create_rag_chain(files: tuple[tuple[str, bytes], ...]):
+    """업로드된 모든 PDF를 하나의 문서 컬렉션으로 벡터화한다."""
+    temp_paths = []
+    pages = []
 
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-            temp_file.write(file_bytes)
-            temp_path = temp_file.name
+        for file_name, file_bytes in files:
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=".pdf"
+            ) as temp_file:
+                temp_file.write(file_bytes)
+                temp_paths.append(temp_file.name)
 
-        pages = PyPDFLoader(temp_path).load()
+            file_pages = PyPDFLoader(temp_paths[-1]).load()
+            for page in file_pages:
+                page.metadata["source"] = file_name
+            pages.extend(file_pages)
+
         if not pages:
             raise ValueError("PDF에서 읽을 수 있는 페이지를 찾지 못했습니다.")
 
@@ -44,9 +131,6 @@ def create_rag_chain(file_bytes: bytes, file_name: str):
         documents = text_splitter.split_documents(pages)
         if not documents:
             raise ValueError("PDF에서 추출할 수 있는 텍스트가 없습니다.")
-
-        for document in documents:
-            document.metadata["source"] = file_name
 
         embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
         vector_store = InMemoryVectorStore(embeddings)
@@ -74,86 +158,108 @@ def create_rag_chain(file_bytes: bytes, file_name: str):
         question_answer_chain = create_stuff_documents_chain(llm, prompt)
         return create_retrieval_chain(retriever, question_answer_chain)
     finally:
-        if temp_path and os.path.exists(temp_path):
-            os.unlink(temp_path)
+        for temp_path in temp_paths:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
 
-def display_sources(context):
-    """검색에 사용된 PDF 페이지를 중복 없이 표시한다."""
-    pages = sorted(
-        {
-            document.metadata["page"] + 1
-            for document in context
-            if isinstance(document.metadata.get("page"), int)
-        }
-    )
-    if pages:
-        st.caption("참조 페이지: " + ", ".join(map(str, pages)))
-
-
-def get_source_pages(context):
+def get_source_references(context):
+    """검색에 사용된 파일명과 페이지를 중복 없이 반환한다."""
     return sorted(
         {
-            document.metadata["page"] + 1
+            (
+                document.metadata.get("source", "알 수 없는 파일"),
+                document.metadata["page"] + 1,
+            )
             for document in context
             if isinstance(document.metadata.get("page"), int)
-        }
+        },
+        key=lambda reference: (reference[0].lower(), reference[1]),
     )
+
+
+def display_sources(references):
+    if references:
+        source_text = " · ".join(
+            f"{file_name} p.{page}" for file_name, page in references
+        )
+        st.caption(f"참조 문서: {source_text}")
 
 
 if not os.getenv("OPENAI_API_KEY"):
     st.error("`.env` 파일에 `OPENAI_API_KEY`를 설정해 주세요.")
     st.stop()
 
-uploaded_file = st.file_uploader(
-    "PDF 파일 업로드",
+uploaded_files = st.file_uploader(
+    "PDF 파일 추가",
     type=["pdf"],
-    accept_multiple_files=False,
-    help="텍스트가 포함된 PDF 파일을 업로드해 주세요.",
+    accept_multiple_files=True,
+    help="새 PDF를 추가해도 기존에 선택한 문서는 유지됩니다.",
+    label_visibility="collapsed",
 )
 
-if uploaded_file is None:
+if not uploaded_files:
     st.info("질문을 시작하려면 PDF 파일을 업로드해 주세요.")
+    st.chat_input("먼저 PDF 파일을 업로드해 주세요.", disabled=True)
     st.stop()
 
-file_bytes = uploaded_file.getvalue()
-file_id = hashlib.sha256(file_bytes).hexdigest()
-if st.session_state.get("file_id") != file_id:
-    st.session_state.file_id = file_id
-    st.session_state.messages = []
+files = tuple((uploaded_file.name, uploaded_file.getvalue()) for uploaded_file in uploaded_files)
+collection_id = hashlib.sha256(
+    b"".join(
+        file_name.encode("utf-8") + b"\0" + file_bytes
+        for file_name, file_bytes in files
+    )
+).hexdigest()
+
+st.session_state.setdefault("messages", [])
+st.session_state.collection_id = collection_id
 
 try:
-    with st.spinner(f"`{uploaded_file.name}` 문서를 분석하고 있습니다..."):
-        rag_chain = create_rag_chain(file_bytes, uploaded_file.name)
+    with st.spinner(f"PDF {len(files)}개를 분석하고 있습니다..."):
+        rag_chain = create_rag_chain(files)
 except Exception as error:
     st.error(f"PDF 처리 중 오류가 발생했습니다: {error}")
     st.stop()
 
-st.success(f"`{uploaded_file.name}` 분석이 완료되었습니다.")
+file_names = ", ".join(file_name for file_name, _ in files)
+st.success(f"문서 {len(files)}개 분석 완료: {file_names}")
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
-        if message.get("pages"):
-            st.caption("참조 페이지: " + ", ".join(map(str, message["pages"])))
+st.caption("대화 기록")
+chat_history = st.container(height=420, border=True)
+
+with chat_history:
+    if not st.session_state.messages:
+        st.info("업로드한 문서에 관해 질문을 입력해 주세요.")
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+            display_sources(message.get("references", []))
 
 question = st.chat_input("PDF 내용에 관해 질문하세요.")
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.write(question)
 
-    with st.chat_message("assistant"):
-        try:
-            with st.spinner("문서에서 답을 찾고 있습니다..."):
-                response = rag_chain.invoke({"input": question})
-            answer = response["answer"]
-            context = response.get("context", [])
-            pages = get_source_pages(context)
-            st.write(answer)
-            display_sources(context)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": answer, "pages": pages}
-            )
-        except Exception as error:
-            st.error(f"답변 생성 중 오류가 발생했습니다: {error}")
+    with chat_history:
+        with st.chat_message("user"):
+            st.write(question)
+
+    with chat_history:
+        with st.chat_message("assistant"):
+            try:
+                with st.spinner("문서에서 답을 찾고 있습니다..."):
+                    response = rag_chain.invoke({"input": question})
+                answer = response["answer"]
+                context = response.get("context", [])
+                references = get_source_references(context)
+                st.write(answer)
+                display_sources(references)
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "references": references,
+                    }
+                )
+            except Exception as error:
+                st.error(f"답변 생성 중 오류가 발생했습니다: {error}")
