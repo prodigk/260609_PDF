@@ -1,4 +1,3 @@
-import hashlib
 import os
 import tempfile
 
@@ -28,7 +27,6 @@ st.markdown(
         --composer-side-gap: 1rem;
     }
 
-    /* 업로더를 질문창과 분리된 상단 카드로 고정 */
     [data-testid="stFileUploader"] {
         position: fixed;
         left: 50%;
@@ -56,7 +54,6 @@ st.markdown(
         background: rgba(128, 128, 128, 0.06);
     }
 
-    /* 질문 입력창도 업로더와 같은 폭으로 맞춘다. */
     [data-testid="stBottomBlockContainer"] {
         width: min(
             var(--composer-width),
@@ -73,12 +70,10 @@ st.markdown(
         box-shadow: 0 0.35rem 1.25rem rgba(0, 0, 0, 0.12);
     }
 
-    /* 채팅 영역과 하단 고정 UI가 겹치지 않도록 공간 확보 */
     [data-testid="stAppViewBlockContainer"] {
         padding-bottom: 18rem;
     }
 
-    /* 채팅 기록 컨테이너 안에서만 세로 스크롤 */
     [data-testid="stVerticalBlockBorderWrapper"] {
         background: rgba(128, 128, 128, 0.025);
         border-color: rgba(128, 128, 128, 0.2);
@@ -99,68 +94,68 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# RAG 체인 생성 함수: PDF를 벡터화하고 검색 기반 QA 체인을 만든다.
+
+def load_pdf(file_name, file_bytes):
+    temp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            temp_file.write(file_bytes)
+            temp_path = temp_file.name
+
+        pages = PyPDFLoader(temp_path).load()
+        for page in pages:
+            page.metadata["source"] = file_name
+        return pages
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
 @st.cache_resource(show_spinner=False)
 def create_rag_chain(files: tuple[tuple[str, bytes], ...]):
     """업로드된 모든 PDF를 하나의 문서 컬렉션으로 벡터화한다."""
-    temp_paths = []
     pages = []
 
-    try:
-        for file_name, file_bytes in files:
-            with tempfile.NamedTemporaryFile(
-                delete=False, suffix=".pdf"
-            ) as temp_file:
-                temp_file.write(file_bytes)
-                temp_paths.append(temp_file.name)
+    for file_name, file_bytes in files:
+        pages.extend(load_pdf(file_name, file_bytes))
 
-            file_pages = PyPDFLoader(temp_paths[-1]).load()
-            for page in file_pages:
-                page.metadata["source"] = file_name
-            pages.extend(file_pages)
+    if not pages:
+        raise ValueError("PDF에서 읽을 수 있는 페이지를 찾지 못했습니다.")
 
-        if not pages:
-            raise ValueError("PDF에서 읽을 수 있는 페이지를 찾지 못했습니다.")
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=120,
+    )
+    documents = text_splitter.split_documents(pages)
+    if not documents:
+        raise ValueError("PDF에서 추출할 수 있는 텍스트가 없습니다.")
 
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,
-            chunk_overlap=120,
-            length_function=len,
-            is_separator_regex=False,
-        )
-        documents = text_splitter.split_documents(pages)
-        if not documents:
-            raise ValueError("PDF에서 추출할 수 있는 텍스트가 없습니다.")
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    vector_store = InMemoryVectorStore(embeddings)
+    vector_store.add_documents(documents)
 
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_store = InMemoryVectorStore(embeddings)
-        vector_store.add_documents(documents)
-
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-        retriever = MultiQueryRetriever.from_llm(
-            retriever=vector_store.as_retriever(search_kwargs={"k": 4}),
-            llm=llm,
-        )
-
-        system_prompt = (
-            "너는 업로드된 PDF의 내용을 바탕으로 답하는 질문-답변 비서다. "
-            "아래 context에 포함된 정보만 사용해 한국어로 정확하고 간결하게 답하라. "
-            "문서에서 답을 찾을 수 없다면 '업로드된 문서에서 답을 찾을 수 없습니다.'라고 답하라. "
-            "추측하거나 문서에 없는 사실을 만들지 마라.\n\n"
-            "context:\n{context}"
-        )
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt),
-                ("human", "{input}"),
-            ]
-        )
-        question_answer_chain = create_stuff_documents_chain(llm, prompt)
-        return create_retrieval_chain(retriever, question_answer_chain)
-    finally:
-        for temp_path in temp_paths:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    retriever = MultiQueryRetriever.from_llm(
+        retriever=vector_store.as_retriever(search_kwargs={"k": 4}),
+        llm=llm,
+    )
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "너는 업로드된 PDF의 내용을 바탕으로 답하는 질문-답변 비서다. "
+                "아래 context에 포함된 정보만 사용해 한국어로 정확하고 간결하게 답하라. "
+                "문서에서 답을 찾을 수 없다면 "
+                "'업로드된 문서에서 답을 찾을 수 없습니다.'라고 답하라. "
+                "추측하거나 문서에 없는 사실을 만들지 마라.\n\n"
+                "context:\n{context}",
+            ),
+            ("human", "{input}"),
+        ]
+    )
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    return create_retrieval_chain(retriever, question_answer_chain)
 
 
 def get_source_references(context):
@@ -186,6 +181,12 @@ def display_sources(references):
         st.caption(f"참조 문서: {source_text}")
 
 
+def display_message(message):
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+        display_sources(message.get("references", []))
+
+
 if not os.getenv("OPENAI_API_KEY"):
     st.error("`.env` 파일에 `OPENAI_API_KEY`를 설정해 주세요.")
     st.stop()
@@ -203,16 +204,12 @@ if not uploaded_files:
     st.chat_input("먼저 PDF 파일을 업로드해 주세요.", disabled=True)
     st.stop()
 
-files = tuple((uploaded_file.name, uploaded_file.getvalue()) for uploaded_file in uploaded_files)
-collection_id = hashlib.sha256(
-    b"".join(
-        file_name.encode("utf-8") + b"\0" + file_bytes
-        for file_name, file_bytes in files
-    )
-).hexdigest()
+files = tuple(
+    (uploaded_file.name, uploaded_file.getvalue())
+    for uploaded_file in uploaded_files
+)
 
 st.session_state.setdefault("messages", [])
-st.session_state.collection_id = collection_id
 
 try:
     with st.spinner(f"PDF {len(files)}개를 분석하고 있습니다..."):
@@ -232,19 +229,14 @@ with chat_history:
         st.info("업로드한 문서에 관해 질문을 입력해 주세요.")
 
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-            display_sources(message.get("references", []))
+        display_message(message)
 
 question = st.chat_input("PDF 내용에 관해 질문하세요.")
 if question:
     st.session_state.messages.append({"role": "user", "content": question})
 
     with chat_history:
-        with st.chat_message("user"):
-            st.write(question)
-
-    with chat_history:
+        display_message({"role": "user", "content": question})
         with st.chat_message("assistant"):
             try:
                 with st.spinner("문서에서 답을 찾고 있습니다..."):
