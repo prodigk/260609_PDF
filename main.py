@@ -15,8 +15,8 @@ from langchain_community.document_loaders import PyPDFLoader
 # 문서 Splitter
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Chroma Vector DB
-from langchain_chroma import Chroma
+# 메모리 기반 Vector DB
+from langchain_core.vectorstores import InMemoryVectorStore
 
 
 # OpenAI 모델
@@ -61,12 +61,8 @@ if uploaded_file is not None:
 
     embeddings = OpenAIEmbeddings()
 
-    db = Chroma.from_documents(
-
-        documents=texts,
-
-        embedding=embeddings
-    )
+    db = InMemoryVectorStore(embeddings)
+    db.add_documents(texts)
 
     retriever = db.as_retriever(
 
