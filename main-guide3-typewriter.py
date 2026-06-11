@@ -1,12 +1,17 @@
 import os
 import tempfile
+# LangChain 체인을 별도 작업 스레드에서 실행합니다.
 import threading
+# 글자별 출력 속도를 조절합니다.
 import time
+# 작업 스레드에서 생성한 글자를 메인 스레드로 안전하게 전달합니다.
 from queue import Empty, Queue
 
 import streamlit as st
 from langchain_community.document_loaders import (  PyPDFLoader )
 from langchain_text_splitters import (    RecursiveCharacterTextSplitter )
+#from langchain_chroma import (    Chroma  )
+# Streamlit Cloud 호환성을 위해 Chroma 대신 메모리 저장소를 사용합니다.
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import (  OpenAIEmbeddings,    ChatOpenAI )
 from langchain_classic.chains import (   create_retrieval_chain )
@@ -58,6 +63,7 @@ class StreamHandler(BaseCallbackHandler):
     처럼 실시간 출력
     """
     def __init__(self, token_queue):
+        # 콜백 스레드에서는 UI를 갱신하지 않고 Queue에 글자만 저장합니다.
         self.token_queue = token_queue
 
     def on_llm_new_token(self, token, **kwargs):
@@ -71,6 +77,7 @@ def stream_chain_response(qa_chain, question, handler, container):
     result = {}
     error = {}
 
+    # RAG 체인을 실행하고 결과 또는 오류를 공유 변수에 저장합니다.
     def run_chain():
         try:
             result["response"] = qa_chain.invoke(
@@ -83,6 +90,7 @@ def stream_chain_response(qa_chain, question, handler, container):
     worker = threading.Thread(target=run_chain, daemon=True)
     worker.start()
 
+    # Streamlit 메인 스레드에서 Queue를 읽어 화면을 한 글자씩 갱신합니다.
     streamed_text = ""
     while worker.is_alive() or not handler.token_queue.empty():
         try:
@@ -119,7 +127,14 @@ if uploaded_file is not None:
     st.info(  f"문서 조각 : {len(texts)}"  )
 
     embeddings = OpenAIEmbeddings(  api_key=openai_key   )
+    
+    # Chroma 변경 -> InMemoryVectorStore
+    # db = Chroma.from_documents(
+    #     documents=texts,
+    #     embedding=embeddings
+    # )
 
+    # 분할된 PDF 문서를 메모리 벡터 저장소에 등록합니다.
     db = InMemoryVectorStore(embeddings)
     db.add_documents(texts)
 
@@ -139,6 +154,7 @@ if uploaded_file is not None:
             with st.spinner(  "답변 생성중..."     ):
 
                 chat_box = st.empty()
+                # StreamHandler와 화면 출력 코드 사이에서 글자를 전달합니다.
                 token_queue = Queue()
                 handler = StreamHandler(token_queue)
 
@@ -165,6 +181,7 @@ if uploaded_file is not None:
                     document_chain
                 )
 
+                # UI 호출을 메인 스레드에서 처리하여 NoSessionContext 오류를 방지합니다.
                 stream_chain_response(
                     qa_chain,
                     question,

@@ -12,7 +12,6 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-
 load_dotenv()
 
 st.set_page_config(page_title="PDF 질문-답변")

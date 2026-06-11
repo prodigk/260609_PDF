@@ -1,7 +1,7 @@
 
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 # # .env 파일 안의 OPENAI_API_KEY 읽기
-# load_dotenv()
+load_dotenv()
 
 # 해당소스를 Streamlit cloud에 배포하기
 
@@ -47,6 +47,15 @@ def pdf_to_document(uploaded_file):
     pages = loader.load()
     return pages
 
+
+# qa_chain.stream()의 여러 결과 중 답변 문자열만 Streamlit에 전달합니다.
+def generate_answer_stream(qa_chain, question):
+    for chunk in qa_chain.stream({"input": question}):
+        answer_chunk = chunk.get("answer")
+        if answer_chunk:
+            yield answer_chunk
+
+
 if uploaded_file is not None:
     pages = pdf_to_document(  uploaded_file   )
     st.success(  f"PDF 로딩 완료 : {len(pages)} 페이지"   )
@@ -70,7 +79,7 @@ if uploaded_file is not None:
             "k":3
         }
     )
-    
+
     st.header(
         "PDF에게 질문하세요"
     )
@@ -78,9 +87,6 @@ if uploaded_file is not None:
     question = st.text_input(
         "질문 입력"
     )
-
-
-
 
     if st.button(
         "질문하기"
@@ -134,15 +140,19 @@ if uploaded_file is not None:
 
                 )
 
-                response = qa_chain.invoke(
-                    {
-                        "input": question
-                    }
-                )
+                # [기존 방식] 전체 답변을 받은 뒤 한 번에 출력합니다.
+                # response = qa_chain.invoke(
+                #     {
+                #         "input": question
+                #     }
+                # )
+                # st.write(
+                #     response["answer"]
+                # )
 
-                # 답변 출력
-                st.write(
-                    response["answer"]
+                # [변경 방식] 문자열 generator를 전달해 답변을 실시간 출력합니다.
+                st.write_stream(
+                    generate_answer_stream(qa_chain, question)
                 )
 
         else:
