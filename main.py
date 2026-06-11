@@ -70,7 +70,7 @@ if uploaded_file is not None:
             "k":3
         }
     )
-
+    
     st.header(
         "PDF에게 질문하세요"
     )
