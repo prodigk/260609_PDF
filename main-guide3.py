@@ -7,7 +7,7 @@ from queue import Empty, Queue
 import streamlit as st
 from langchain_community.document_loaders import (  PyPDFLoader )
 from langchain_text_splitters import (    RecursiveCharacterTextSplitter )
-from langchain_chroma import (    Chroma  )
+from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import (  OpenAIEmbeddings,    ChatOpenAI )
 from langchain_classic.chains import (   create_retrieval_chain )
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
@@ -120,10 +120,8 @@ if uploaded_file is not None:
 
     embeddings = OpenAIEmbeddings(  api_key=openai_key   )
 
-    db = Chroma.from_documents(
-        documents=texts,
-        embedding=embeddings
-    )
+    db = InMemoryVectorStore(embeddings)
+    db.add_documents(texts)
 
     retriever = db.as_retriever(
         search_kwargs={
