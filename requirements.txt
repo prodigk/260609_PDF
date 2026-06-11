@@ -2,6 +2,8 @@ langchain-community
 langchain-classic
 langchain-text-splitters
 langchain-openai
+langchain-core
+tiktoken
 streamlit
 pypdf
 python-dotenv
